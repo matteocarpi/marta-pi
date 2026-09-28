@@ -35,6 +35,10 @@ DRM_CONNECTOR_2 = "HDMI-A-2"
 SCREEN_1 = 0
 SCREEN_2 = 1
 
+# Xorg clones all outputs at 0,0 by default. Lay them out side by side so the
+# --fs-screen indices above address different physical screens.
+ARRANGE_SCREENS = True
+
 # None = mpv default. Force the jack with "alsa/sysdefault:CARD=Headphones".
 # List options with: mpv --audio-device=help
 AUDIO_DEVICE = None
@@ -80,6 +84,46 @@ def check_connector(connector):
         return
     if status != "connected":
         print(f"Warning: {connector} reports '{status}'.", flush=True)
+
+
+def connected_outputs():
+    """X output names with a display attached, e.g. ['HDMI-1', 'HDMI-2']."""
+    result = subprocess.run(
+        ["xrandr", "--query"], capture_output=True, text=True, check=True
+    )
+    names = []
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and fields[1] == "connected":
+            names.append(fields[0])
+    return names
+
+
+def arrange_screens():
+    """Place the connected outputs left-to-right instead of cloned."""
+    if not os.environ.get("DISPLAY"):
+        return  # Wayland compositors handle their own layout.
+    try:
+        outputs = connected_outputs()
+    except (OSError, subprocess.CalledProcessError) as error:
+        print(f"Warning: could not run xrandr ({error}).", flush=True)
+        return
+
+    print(f"Outputs: {', '.join(outputs) or 'none'}", flush=True)
+    if len(outputs) < 2:
+        print("Warning: fewer than two screens detected.", flush=True)
+    if not outputs:
+        return
+
+    command = ["xrandr", "--output", outputs[0], "--auto", "--pos", "0x0"]
+    for left, right in zip(outputs, outputs[1:]):
+        command += ["--output", right, "--auto", "--right-of", left]
+    if DEBUG:
+        print(f"  {shlex.join(command)}", flush=True)
+    try:
+        subprocess.run(command, check=True)
+    except (OSError, subprocess.CalledProcessError) as error:
+        print(f"Warning: xrandr layout failed ({error}).", flush=True)
 
 
 def video_command(path, connector, screen):
@@ -151,6 +195,9 @@ if OUTPUT_MODE == "session" and not (
         "Start it from a session, e.g.  startx $(pwd)/main.py\n"
         "Or set OUTPUT_MODE = 'drm' for a single screen."
     )
+
+if OUTPUT_MODE == "session" and ARRANGE_SCREENS:
+    arrange_screens()
 
 players = [
     Player("video screen 1", video_command(VIDEO_HDMI_1, DRM_CONNECTOR_1, SCREEN_1)),
