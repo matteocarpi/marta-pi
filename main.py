@@ -45,10 +45,11 @@ AUDIO_DEVICE = None
 
 RESTART_DELAY = 2.0  # seconds to wait before respawning a dead player
 
-# "auto-safe" probes every backend, which logs harmless "Cannot load
-# libcuda.so.1" / "libvdpau_vc4.so" misses on a Pi. "v4l2m2m-copy" targets the
-# Pi's decoder directly; "no" forces software decoding.
-HWDEC = "auto-safe"
+# "auto-safe" ends up on software decoding here anyway: it picks vulkan-copy,
+# which the Pi's Vulkan driver cannot do (no VK_KHR_video_decode_queue), after
+# logging misses for libcuda / libvdpau_vc4. "no" skips the pointless probing.
+# Try "v4l2m2m-copy" if CPU decoding ever falls behind.
+HWDEC = "no"
 
 # Run as `DEBUG=1 python3 main.py` to let mpv print its errors instead of
 # staying silent.
