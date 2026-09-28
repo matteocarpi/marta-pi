@@ -19,10 +19,21 @@ VIDEO_HDMI_2 = "/mnt/usb/video/1/2.mp4"
 AUDIO_TRACK = "/mnt/usb/audio.mp3"
 
 # --- Output configuration --------------------------------------------------
-# None = find the card that owns the connector (vc4 is not always card0).
+# "session" = run inside an X or Wayland session, one fullscreen window per
+#             screen. Required for two screens: on bare KMS only one process
+#             can hold DRM master, so a second mpv cannot start.
+# "drm"     = bare KMS, no session needed. Single screen only.
+OUTPUT_MODE = "session"
+
+# Bare-KMS connector names, used by OUTPUT_MODE = "drm".
+# None = let mpv probe (vc4 is not always card0).
 DRM_DEVICE = None
 DRM_CONNECTOR_1 = "HDMI-A-1"
 DRM_CONNECTOR_2 = "HDMI-A-2"
+
+# Screen indices for OUTPUT_MODE = "session", in xrandr/compositor order.
+SCREEN_1 = 0
+SCREEN_2 = 1
 
 # None = mpv default. Force the jack with "alsa/sysdefault:CARD=Headphones".
 # List options with: mpv --audio-device=help
@@ -71,20 +82,30 @@ def check_connector(connector):
         print(f"Warning: {connector} reports '{status}'.", flush=True)
 
 
-def video_command(path, connector):
-    check_connector(connector)
+def video_command(path, connector, screen):
     command = COMMON + [
         "--no-audio",
         "--fullscreen",
-        "--vo=gpu",
-        "--gpu-context=drm",
         "--hwdec=auto-safe",
-        f"--drm-connector={connector}",
     ]
-    # Leave --drm-device unset so mpv probes for the card that actually has
-    # connectors (vc4 is often card1, while card0 is the v3d render node).
-    if DRM_DEVICE:
-        command.append(f"--drm-device={DRM_DEVICE}")
+    if OUTPUT_MODE == "drm":
+        check_connector(connector)
+        command += [
+            "--vo=gpu",
+            "--gpu-context=drm",
+            f"--drm-connector={connector}",
+        ]
+        # Leave --drm-device unset so mpv probes for the card that actually has
+        # connectors (vc4 is often card1, while card0 is the v3d render node).
+        if DRM_DEVICE:
+            command.append(f"--drm-device={DRM_DEVICE}")
+    else:
+        command += [
+            f"--fs-screen={screen}",
+            "--no-border",
+            "--ontop",
+            "--cursor-autohide=always",
+        ]
     command.append(path)
     return command
 
@@ -122,9 +143,18 @@ class Player:
             self.process.kill()
 
 
+if OUTPUT_MODE == "session" and not (
+    os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+):
+    sys.exit(
+        "OUTPUT_MODE is 'session' but no DISPLAY/WAYLAND_DISPLAY is set.\n"
+        "Start it from a session, e.g.  startx $(pwd)/main.py\n"
+        "Or set OUTPUT_MODE = 'drm' for a single screen."
+    )
+
 players = [
-    Player(f"video {DRM_CONNECTOR_1}", video_command(VIDEO_HDMI_1, DRM_CONNECTOR_1)),
-    Player(f"video {DRM_CONNECTOR_2}", video_command(VIDEO_HDMI_2, DRM_CONNECTOR_2)),
+    Player("video screen 1", video_command(VIDEO_HDMI_1, DRM_CONNECTOR_1, SCREEN_1)),
+    Player("video screen 2", video_command(VIDEO_HDMI_2, DRM_CONNECTOR_2, SCREEN_2)),
     # Player("audio", audio_command(AUDIO_TRACK)),
 ]
 
