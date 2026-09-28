@@ -8,14 +8,10 @@ RequiresMountsFor=/mnt/usb
 User=admin
 WorkingDirectory=/home/admin/marta-pi
 
-# startx needs a VT it can own. -keeptty keeps the one systemd hands us.
-ExecStart=/usr/bin/startx /usr/bin/python3 /home/admin/marta-pi/main.py -- vt1 -keeptty
+# X gets vt7 of its own and switches to it. Do not point this at vt1: the getty
+# there owns that terminal, and systemd's TTY handling would SIGHUP us.
+ExecStart=/usr/bin/startx /usr/bin/python3 /home/admin/marta-pi/main.py -- vt7
 
-PAMName=login
-TTYPath=/dev/tty1
-TTYReset=yes
-TTYVHangup=yes
-StandardInput=tty
 StandardOutput=journal
 StandardError=journal
 

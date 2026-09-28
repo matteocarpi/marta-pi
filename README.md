@@ -82,10 +82,12 @@ systemctl status marta-pi
 journalctl -u marta-pi -f
 ```
 
-The unit claims `vt1`, so disable console autologin if it is on
-(`sudo raspi-config` → System Options → Boot / Auto Login → *Console*) to keep a
-getty off that VT. It also waits for `/mnt/usb` to be mounted, and restarts
-playback after 5 s if it exits.
+X runs on `vt7` and switches to it, leaving the console login on `tty1` alone.
+Don't move it to `vt1`: the getty owns that terminal, and the service gets
+SIGHUP'd the moment it starts (`code=killed, signal=HUP`).
+
+The unit also waits for `/mnt/usb` to be mounted, and restarts playback after
+5 s if it exits.
 
 Stop it while working by hand: `sudo systemctl stop marta-pi`.
 
