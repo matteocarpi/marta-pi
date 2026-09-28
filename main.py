@@ -5,6 +5,7 @@ Spawns three mpv processes (one per HDMI connector, one for audio) and keeps
 them alive until Ctrl+C / SIGTERM.
 """
 
+import glob
 import os
 import shlex
 import signal
@@ -18,8 +19,8 @@ VIDEO_HDMI_2 = "/mnt/usb/video/1/2.mp4"
 AUDIO_TRACK = "/mnt/usb/audio.mp3"
 
 # --- Output configuration --------------------------------------------------
-# List connectors with: modetest -c   (or ls /sys/class/drm/)
-DRM_DEVICE = "/dev/dri/card0"
+# None = find the card that owns the connector (vc4 is not always card0).
+DRM_DEVICE = None
 DRM_CONNECTOR_1 = "HDMI-A-1"
 DRM_CONNECTOR_2 = "HDMI-A-2"
 
@@ -48,17 +49,44 @@ else:
     COMMON += ["--really-quiet", "--no-terminal"]
 
 
+def check_connector(connector):
+    """Warn if the connector is missing or has nothing plugged into it."""
+    entries = glob.glob(f"/sys/class/drm/card*-{connector}")
+    if not entries:
+        found = sorted(
+            os.path.basename(p).split("-", 1)[1]
+            for p in glob.glob("/sys/class/drm/card*-*")
+        )
+        print(
+            f"Warning: no DRM connector named {connector}. Found: {', '.join(found)}",
+            flush=True,
+        )
+        return
+    try:
+        with open(os.path.join(entries[0], "status")) as handle:
+            status = handle.read().strip()
+    except OSError:
+        return
+    if status != "connected":
+        print(f"Warning: {connector} reports '{status}'.", flush=True)
+
+
 def video_command(path, connector):
-    return COMMON + [
+    check_connector(connector)
+    command = COMMON + [
         "--no-audio",
         "--fullscreen",
         "--vo=gpu",
         "--gpu-context=drm",
         "--hwdec=auto-safe",
-        f"--drm-device={DRM_DEVICE}",
         f"--drm-connector={connector}",
-        path,
     ]
+    # Leave --drm-device unset so mpv probes for the card that actually has
+    # connectors (vc4 is often card1, while card0 is the v3d render node).
+    if DRM_DEVICE:
+        command.append(f"--drm-device={DRM_DEVICE}")
+    command.append(path)
+    return command
 
 
 def audio_command(path):
