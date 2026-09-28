@@ -5,6 +5,8 @@ Spawns three mpv processes (one per HDMI connector, one for audio) and keeps
 them alive until Ctrl+C / SIGTERM.
 """
 
+import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -27,16 +29,23 @@ AUDIO_DEVICE = None
 
 RESTART_DELAY = 2.0  # seconds to wait before respawning a dead player
 
+# Run as `DEBUG=1 python3 main.py` to let mpv print its errors instead of
+# staying silent.
+DEBUG = bool(os.environ.get("DEBUG"))
+
 COMMON = [
     "mpv",
     "--no-config",
     "--loop-file=inf",
-    "--really-quiet",
     "--no-input-default-bindings",
     "--no-osc",
     "--no-osd-bar",
-    "--no-terminal",
 ]
+
+if DEBUG:
+    COMMON += ["--msg-level=all=v"]
+else:
+    COMMON += ["--really-quiet", "--no-terminal"]
 
 
 def video_command(path, connector):
@@ -68,6 +77,8 @@ class Player:
 
     def start(self):
         print(f"Starting {self.name}...", flush=True)
+        if DEBUG:
+            print(f"  {shlex.join(self.command)}", flush=True)
         self.process = subprocess.Popen(self.command)
 
     def is_running(self):
@@ -109,7 +120,8 @@ try:
     while running:
         for player in players:
             if not player.is_running() and running:
-                print(f"{player.name} exited, restarting.", flush=True)
+                code = player.process.returncode
+                print(f"{player.name} exited (code {code}), restarting.", flush=True)
                 time.sleep(RESTART_DELAY)
                 player.start()
         time.sleep(0.5)
