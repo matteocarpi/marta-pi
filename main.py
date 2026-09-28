@@ -86,7 +86,7 @@ class Player:
 players = [
     Player(f"video {DRM_CONNECTOR_1}", video_command(VIDEO_HDMI_1, DRM_CONNECTOR_1)),
     Player(f"video {DRM_CONNECTOR_2}", video_command(VIDEO_HDMI_2, DRM_CONNECTOR_2)),
-    Player("audio", audio_command(AUDIO_TRACK)),
+    # Player("audio", audio_command(AUDIO_TRACK)),
 ]
 
 running = True
