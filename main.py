@@ -45,6 +45,11 @@ AUDIO_DEVICE = None
 
 RESTART_DELAY = 2.0  # seconds to wait before respawning a dead player
 
+# "auto-safe" probes every backend, which logs harmless "Cannot load
+# libcuda.so.1" / "libvdpau_vc4.so" misses on a Pi. "v4l2m2m-copy" targets the
+# Pi's decoder directly; "no" forces software decoding.
+HWDEC = "auto-safe"
+
 # Run as `DEBUG=1 python3 main.py` to let mpv print its errors instead of
 # staying silent.
 DEBUG = bool(os.environ.get("DEBUG"))
@@ -130,7 +135,7 @@ def video_command(path, connector, screen):
     command = COMMON + [
         "--no-audio",
         "--fullscreen",
-        "--hwdec=auto-safe",
+        f"--hwdec={HWDEC}",
     ]
     if OUTPUT_MODE == "drm":
         check_connector(connector)
