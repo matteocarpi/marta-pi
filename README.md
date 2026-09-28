@@ -57,6 +57,38 @@ Set `DEBUG=1` to print each mpv command line and let mpv report its own errors:
 DEBUG=1 startx ./main.py
 ```
 
+## Autostart
+
+`marta-pi.service` runs playback at boot. It needs `startx` to be usable by a
+normal user, so set this in `/etc/X11/Xwrapper.config` first:
+
+```
+allowed_users=anybody
+needs_root_rights=yes
+```
+
+Then install and enable:
+
+```bash
+sudo cp marta-pi.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now marta-pi
+```
+
+Check on it:
+
+```bash
+systemctl status marta-pi
+journalctl -u marta-pi -f
+```
+
+The unit claims `vt1`, so disable console autologin if it is on
+(`sudo raspi-config` → System Options → Boot / Auto Login → *Console*) to keep a
+getty off that VT. It also waits for `/mnt/usb` to be mounted, and restarts
+playback after 5 s if it exits.
+
+Stop it while working by hand: `sudo systemctl stop marta-pi`.
+
 ## Why X is required
 
 On bare KMS only one process can hold DRM master per card, so a second `mpv`

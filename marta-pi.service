@@ -1,0 +1,26 @@
+[Unit]
+Description=marta-pi looping playback
+After=systemd-user-sessions.service
+# Media lives on the USB stick; don't start before it is mounted.
+RequiresMountsFor=/mnt/usb
+
+[Service]
+User=admin
+WorkingDirectory=/home/admin/marta-pi
+
+# startx needs a VT it can own. -keeptty keeps the one systemd hands us.
+ExecStart=/usr/bin/startx /usr/bin/python3 /home/admin/marta-pi/main.py -- vt1 -keeptty
+
+PAMName=login
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+StandardInput=tty
+StandardOutput=journal
+StandardError=journal
+
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
