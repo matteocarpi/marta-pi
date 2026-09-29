@@ -11,25 +11,42 @@ import shlex
 import signal
 import subprocess
 import sys
+import threading
 import time
 
-# Buttons are optional. A missing gpiozero, or a GPIO chip that cannot be
-# claimed (in a container without /dev/gpiochip0, say), must not stop the video
-# from playing - that is this machine's primary job.
+# Buttons and e-paper are both optional. A missing gpiozero, a GPIO chip that
+# cannot be claimed (in a container without /dev/gpiochip0, say), or an
+# unplugged panel must not stop the video playing - that is this machine's
+# primary job.
 try:
     from buttons import ChannelButtons
 except ImportError as error:
     ChannelButtons = None
     print(f"Warning: button support unavailable ({error}).", flush=True)
 
+try:
+    from epaper import EPaper
+except ImportError as error:
+    EPaper = None
+    print(f"Warning: e-paper support unavailable ({error}).", flush=True)
+
 current_channel = 1
 
 USB_PATH = "/mnt/usb"
-# --- Media files (placeholders) --------------------------------------------
-VIDEO_HDMI_1 = f"{USB_PATH}/{current_channel}/1.mp4"
-VIDEO_HDMI_2 = f"{USB_PATH}/{current_channel}/2.mp4"
-AUDIO_TRACK = f"{USB_PATH}/{current_channel}1.mp3"
-TEXT = f""
+
+
+# --- Media files -----------------------------------------------------------
+# A function rather than constants, because the channel changes while the
+# program runs and f-strings at module level would only ever be evaluated once.
+def media_paths(channel):
+    return {
+        "video1": f"{USB_PATH}/{channel}/1.mp4",
+        "video2": f"{USB_PATH}/{channel}/2.mp4",
+        "audio": f"{USB_PATH}/{channel}/1.mp3",
+        "text": f"{USB_PATH}/{channel}/text.txt",
+    }
+
+
 # --- Output configuration --------------------------------------------------
 # "session" = run inside an X or Wayland session, one fullscreen window per
 #             screen. Required for two screens: on bare KMS only one process
@@ -55,7 +72,15 @@ ARRANGE_SCREENS = True
 # List options with: mpv --audio-device=help
 AUDIO_DEVICE = None
 
-RESTART_DELAY = 2.0  # seconds to wait before respawning a dead player
+RESTART_DELAY = 2.0  # seconds to wait before respawning a player that died
+
+# How long the supervisor loop sleeps between checks. A button press interrupts
+# the sleep, so this is not the switching latency.
+POLL_INTERVAL = 0.5
+
+# How long to let an in-progress e-paper refresh finish on shutdown, rather than
+# closing the port from under it.
+PANEL_SHUTDOWN_WAIT = 10.0
 
 # "auto-safe" ends up on software decoding here anyway: it picks vulkan-copy,
 # which the Pi's Vulkan driver cannot do (no VK_KHR_video_decode_queue), after
@@ -180,6 +205,20 @@ def audio_command(path):
     return cmd
 
 
+def player_commands(channel):
+    """(name, argv) for every player, for one channel.
+
+    Both the initial players and each channel switch come through here, so
+    there is one place that decides what plays.
+    """
+    paths = media_paths(channel)
+    return [
+        ("video screen 1", video_command(paths["video1"], DRM_CONNECTOR_1, SCREEN_1)),
+        ("video screen 2", video_command(paths["video2"], DRM_CONNECTOR_2, SCREEN_2)),
+        # ("audio", audio_command(paths["audio"])),
+    ]
+
+
 class Player:
     def __init__(self, name, command):
         self.name = name
@@ -194,6 +233,15 @@ class Player:
 
     def is_running(self):
         return self.process is not None and self.process.poll() is None
+
+    def terminate(self):
+        """Ask the process to quit, without waiting for it.
+
+        Split out from stop() so a channel switch can signal every player at
+        once and have them shut down in parallel instead of one after another.
+        """
+        if self.is_running():
+            self.process.terminate()
 
     def stop(self):
         if not self.is_running():
@@ -217,11 +265,7 @@ if OUTPUT_MODE == "session" and not (
 if OUTPUT_MODE == "session" and ARRANGE_SCREENS:
     arrange_screens()
 
-players = [
-    Player("video screen 1", video_command(VIDEO_HDMI_1, DRM_CONNECTOR_1, SCREEN_1)),
-    Player("video screen 2", video_command(VIDEO_HDMI_2, DRM_CONNECTOR_2, SCREEN_2)),
-    # Player("audio", audio_command(AUDIO_TRACK)),
-]
+players = [Player(name, command) for name, command in player_commands(current_channel)]
 
 running = True
 
@@ -235,18 +279,95 @@ signal.signal(signal.SIGINT, shutdown)
 signal.signal(signal.SIGTERM, shutdown)
 
 
+# --- Channel switching -----------------------------------------------------
+# requested_channel is written by the button thread and read by play(). A plain
+# assignment is atomic under the GIL, so no lock is needed - and because every
+# mutation of `players` stays on the main thread, the supervisor loop below can
+# never race with a switch.
+requested_channel = current_channel
+switch_request = threading.Event()
+panel_request = threading.Event()
+
+
+def switch_channel(channel):
+    """Repoint every player at the new channel and restart it.
+
+    Main thread only, called from play().
+    """
+    global current_channel
+    started = time.monotonic()
+
+    # New argv first: if the supervisor sees a player die before we restart it,
+    # it must respawn the new channel rather than the old one.
+    for player, (_, command) in zip(players, player_commands(channel)):
+        player.command = command
+
+    for player in players:
+        player.terminate()  # signal them all, so they shut down in parallel
+    for player in players:
+        player.stop()  # reap, and kill anything that ignored SIGTERM
+    for player in players:
+        player.start()
+
+    current_channel = channel
+    print(
+        f"Channel {channel} playing ({(time.monotonic() - started) * 1000:.0f} ms).",
+        flush=True,
+    )
+
+
+def show_text(channel):
+    """Put the channel's text file on the e-paper. Panel thread only."""
+    if epd is None:
+        return
+    path = media_paths(channel)["text"]
+    try:
+        with open(path, encoding="utf-8") as handle:
+            epd.text(handle.read())
+    except OSError as error:
+        print(f"Warning: cannot read {path} ({error}).", flush=True)
+    except Exception as error:
+        print(f"Warning: e-paper update failed ({error}).", flush=True)
+
+
+def panel_loop():
+    """Refresh the e-paper on a thread of its own.
+
+    A refresh takes about 7 s, so it must not run on the supervisor loop (which
+    keeps the video alive) nor on the button worker (where it would hold up the
+    next press). Only the channel currently selected is drawn, so a burst of
+    presses costs one refresh showing whatever was settled on - and the video
+    switches immediately regardless of what the panel is doing.
+    """
+    while running:
+        fired = panel_request.wait(timeout=POLL_INTERVAL)
+        panel_request.clear()
+        if fired and running:
+            show_text(requested_channel)
+
+
 def on_channel_change(channel):
     """Runs on the button worker thread whenever the selection changes.
 
-    Setting current_channel does not move the video on its own: VIDEO_HDMI_1/2
-    and AUDIO_TRACK were interpolated once at import time, so they still point
-    at whatever channel was selected then. Switching playback means rebuilding
-    those paths from the new channel and restarting the players.
+    Does no work itself: both the video switch and the panel refresh happen on
+    threads that own those resources, so this returns immediately and the next
+    press is never held up.
     """
-    global current_channel
-    current_channel = channel
-    print(f"Channel {channel} selected.", flush=True)
+    global requested_channel
+    requested_channel = channel
+    switch_request.set()
+    panel_request.set()
 
+
+epd = None
+panel_thread = None
+if EPaper is not None:
+    try:
+        epd = EPaper().open()
+        panel_thread = threading.Thread(target=panel_loop, name="panel", daemon=True)
+        panel_thread.start()
+    except Exception as error:
+        print(f"Warning: e-paper unavailable ({error}).", flush=True)
 
 buttons = None
 if ChannelButtons is not None:
@@ -260,13 +381,18 @@ if ChannelButtons is not None:
 
 
 def play():
+    global running
     try:
         for player in players:
             player.start()
 
         print("Playing. Ctrl+C to quit.", flush=True)
+        panel_request.set()  # draw the starting channel without delaying video
 
         while running:
+            if requested_channel != current_channel:
+                switch_channel(requested_channel)
+
             for player in players:
                 if not player.is_running() and running:
                     code = player.process.returncode
@@ -275,13 +401,23 @@ def play():
                     )
                     time.sleep(RESTART_DELAY)
                     player.start()
-            time.sleep(0.5)
+
+            # Waiting on the event rather than the clock: a button press returns
+            # from this at once, so a switch never waits out the poll interval.
+            switch_request.wait(timeout=POLL_INTERVAL)
+            switch_request.clear()
     finally:
         print("\nStopping players...", flush=True)
+        running = False  # tells the panel thread to wind up too
         for player in players:
             player.stop()
         if buttons is not None:
             buttons.stop()
+        if panel_thread is not None:
+            panel_request.set()  # wake it so it sees running == False
+            panel_thread.join(timeout=PANEL_SHUTDOWN_WAIT)
+        if epd is not None:
+            epd.close()
         sys.exit(0)
 
 
