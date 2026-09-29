@@ -13,12 +13,23 @@ import subprocess
 import sys
 import time
 
-current_channel = 1
-# --- Media files (placeholders) --------------------------------------------
-VIDEO_HDMI_1 = f"/mnt/usb/video/{current_channel}/1.mp4"
-VIDEO_HDMI_2 = f"/mnt/usb/video/{current_channel}/2.mp4"
-AUDIO_TRACK = f"/mnt/usb/audio/{current_channel}1.mp3"
+# Buttons are optional. A missing gpiozero, or a GPIO chip that cannot be
+# claimed (in a container without /dev/gpiochip0, say), must not stop the video
+# from playing - that is this machine's primary job.
+try:
+    from buttons import ChannelButtons
+except ImportError as error:
+    ChannelButtons = None
+    print(f"Warning: button support unavailable ({error}).", flush=True)
 
+current_channel = 1
+
+USB_PATH = "/mnt/usb"
+# --- Media files (placeholders) --------------------------------------------
+VIDEO_HDMI_1 = f"{USB_PATH}/{current_channel}/1.mp4"
+VIDEO_HDMI_2 = f"{USB_PATH}/{current_channel}/2.mp4"
+AUDIO_TRACK = f"{USB_PATH}/{current_channel}1.mp3"
+TEXT = f""
 # --- Output configuration --------------------------------------------------
 # "session" = run inside an X or Wayland session, one fullscreen window per
 #             screen. Required for two screens: on bare KMS only one process
@@ -224,6 +235,30 @@ signal.signal(signal.SIGINT, shutdown)
 signal.signal(signal.SIGTERM, shutdown)
 
 
+def on_channel_change(channel):
+    """Runs on the button worker thread whenever the selection changes.
+
+    Setting current_channel does not move the video on its own: VIDEO_HDMI_1/2
+    and AUDIO_TRACK were interpolated once at import time, so they still point
+    at whatever channel was selected then. Switching playback means rebuilding
+    those paths from the new channel and restarting the players.
+    """
+    global current_channel
+    current_channel = channel
+    print(f"Channel {channel} selected.", flush=True)
+
+
+buttons = None
+if ChannelButtons is not None:
+    try:
+        buttons = ChannelButtons(
+            initial=current_channel, on_change=on_channel_change
+        ).start()
+        print(f"Buttons ready, channel {buttons.current_channel}.", flush=True)
+    except Exception as error:
+        print(f"Warning: buttons unavailable ({error}).", flush=True)
+
+
 def play():
     try:
         for player in players:
@@ -245,6 +280,8 @@ def play():
         print("\nStopping players...", flush=True)
         for player in players:
             player.stop()
+        if buttons is not None:
+            buttons.stop()
         sys.exit(0)
 
 
