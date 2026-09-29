@@ -18,14 +18,32 @@ Looping video on both HDMI outputs of a Raspberry Pi, plus a looping audio track
 | `x11-xserver-utils` | provides `xrandr`, used to lay out the two screens |
 | `python3-gpiozero` | GPIO access |
 | `python3-lgpio` | gpiozero pin backend on Bookworm |
+| `python3-serial` | `pyserial` — `epaper.py` uses it to reach the e-paper's ESP32 board over USB |
 
 Install:
 
 ```bash
 sudo apt update
 sudo apt install -y git mpv xserver-xorg xinit x11-xserver-utils \
-    python3-gpiozero python3-lgpio
+    python3-gpiozero python3-lgpio python3-serial
 ```
+
+Opening the serial port also needs group membership, which only takes effect
+after a fresh login:
+
+```bash
+sudo usermod -aG dialout $USER
+```
+
+### On the ESP32
+
+`epaper_serial/epaper_serial.ino` is built and flashed from a workstation, not
+the Pi. In the Arduino IDE: board **ESP32 Dev Module**, and via Library Manager:
+
+| Library | Use |
+| --- | --- |
+| `GxEPD2` | e-paper panel driver (Jean-Marc Zingg) |
+| `Adafruit GFX Library` | fonts and text rendering — pulled in as a GxEPD2 dependency |
 
 ## Setup
 
