@@ -13,10 +13,11 @@ import subprocess
 import sys
 import time
 
+current_channel = 1
 # --- Media files (placeholders) --------------------------------------------
-VIDEO_HDMI_1 = "/mnt/usb/video/1/1.mp4"
-VIDEO_HDMI_2 = "/mnt/usb/video/1/2.mp4"
-AUDIO_TRACK = "/mnt/usb/audio.mp3"
+VIDEO_HDMI_1 = f"/mnt/usb/video/{current_channel}/1.mp4"
+VIDEO_HDMI_2 = f"/mnt/usb/video/{current_channel}/2.mp4"
+AUDIO_TRACK = f"/mnt/usb/audio/{current_channel}1.mp3"
 
 # --- Output configuration --------------------------------------------------
 # "session" = run inside an X or Wayland session, one fullscreen window per
@@ -222,22 +223,29 @@ def shutdown(_signum, _frame):
 signal.signal(signal.SIGINT, shutdown)
 signal.signal(signal.SIGTERM, shutdown)
 
-try:
-    for player in players:
-        player.start()
 
-    print("Playing. Ctrl+C to quit.", flush=True)
-
-    while running:
+def play():
+    try:
         for player in players:
-            if not player.is_running() and running:
-                code = player.process.returncode
-                print(f"{player.name} exited (code {code}), restarting.", flush=True)
-                time.sleep(RESTART_DELAY)
-                player.start()
-        time.sleep(0.5)
-finally:
-    print("\nStopping players...", flush=True)
-    for player in players:
-        player.stop()
-    sys.exit(0)
+            player.start()
+
+        print("Playing. Ctrl+C to quit.", flush=True)
+
+        while running:
+            for player in players:
+                if not player.is_running() and running:
+                    code = player.process.returncode
+                    print(
+                        f"{player.name} exited (code {code}), restarting.", flush=True
+                    )
+                    time.sleep(RESTART_DELAY)
+                    player.start()
+            time.sleep(0.5)
+    finally:
+        print("\nStopping players...", flush=True)
+        for player in players:
+            player.stop()
+        sys.exit(0)
+
+
+play()

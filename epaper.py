@@ -5,40 +5,66 @@ The panel hangs off a Waveshare e-Paper ESP32 Driver Board, so the Pi never
 touches SPI - it sends lines of text to the sketch in epaper_serial/ and the
 ESP32 does the drawing.
 
+Use it from another script - keep one instance alive and call text() as often
+as you like, since opening the port costs a second or two:
+
+    from epaper import EPaper
+
+    epd = EPaper(font="m").open()
+    epd.text("Hello")
+    epd.text("Changed")
+    epd.close()
+
+Config is keyword arguments, or a Config instance if you'd rather build it up:
+
+    from epaper import Config, EPaper
+
+    settings = Config(port="/dev/ttyACM0", font="l", min_interval=5.0)
+    with EPaper(settings) as epd:
+        epd.text("Marta")
+
+For a single update where the connection cost doesn't matter:
+
+    from epaper import show
+    show("Hello", font="s")
+
+It is also a CLI:
+
     ./epaper.py                          sample text
     ./epaper.py "Hello Marta"            one-shot
     ./epaper.py --font m "Two\\nlines"    smaller type, explicit line break
     ./epaper.py --clear                  blank the screen
-    ./epaper.py --watch /run/marta/epaper.txt
+    ./epaper.py --watch /path/to/file    redraw whenever the file changes
     echo "from a pipe" | ./epaper.py --stdin
-
-Import it instead to drive the panel from other code:
-
-    from epaper import EPaper
-    with EPaper() as epd:
-        epd.text("Button pressed")
 """
 
 import argparse
 import glob
 import os
 import sys
+import threading
 import time
 import unicodedata
+from dataclasses import dataclass, fields
 
 import serial  # python3-serial
 
-# --- Serial ----------------------------------------------------------------
-# None = pick the first USB serial adapter found. The driver board has a CP2102
-# on it, so it shows up as /dev/ttyUSB0 rather than /dev/ttyACM0.
+# --- Defaults --------------------------------------------------------------
+# Every one of these is overridable per instance; see Config below.
+
+# None = pick the first USB serial adapter found. Current driver boards carry a
+# WCH CH343 bridge, so the Pi names it /dev/ttyACM0; older ones have a CP2102
+# and come up as /dev/ttyUSB0. Both are matched.
 PORT = None
 BAUD = 115200
+
+FONT = "l"  # "s" 12pt, "m" 18pt, "l" 24pt - must match epaper_serial.ino
 
 # The board reboots whenever the port is opened on some setups, and panel init
 # takes a moment after that.
 READY_TIMEOUT = 12.0
 
-# A full refresh of the 7.5" panel takes roughly 4-5 s, and it is the only kind
+# A full refresh of the 7.5" panel takes roughly 5-7 s, and it is the only kind
 # this panel does well - it flashes black/white on every update by design.
 REPLY_TIMEOUT = 30.0
 
@@ -50,7 +76,7 @@ WATCH_POLL = 0.5  # seconds between mtime checks in --watch mode
 
 SAMPLE_TEXT = "Hello Marta\\nthe panel works"
 
-DEBUG = bool(os.environ.get("DEBUG"))
+FONTS = ("s", "m", "l")
 
 # The Adafruit GFX fonts in the sketch only carry ASCII 0x20-0x7E, so anything
 # outside that is folded down before it goes over the wire.
@@ -58,12 +84,27 @@ TRANSLITERATE = {
     "‘": "'", "’": "'", "‚": "'", "‛": "'",
     "“": '"', "”": '"', "„": '"', "‟": '"',
     "–": "-", "—": "-", "−": "-",
-    "…": "...", " ": " ", "€": "EUR", "£": "GBP",
+    "…": "...", " ": " ", "€": "EUR", "£": "GBP",
 }
 
 
 class EPaperError(RuntimeError):
     pass
+
+
+@dataclass
+class Config:
+    port: str = PORT
+    baud: int = BAUD
+    font: str = FONT
+    min_interval: float = MIN_INTERVAL
+    ready_timeout: float = READY_TIMEOUT
+    reply_timeout: float = REPLY_TIMEOUT
+    debug: bool = bool(os.environ.get("DEBUG"))
+
+    def __post_init__(self):
+        if self.font not in FONTS:
+            raise ValueError(f"font must be one of {FONTS}, got {self.font!r}")
 
 
 def to_ascii(text):
@@ -77,10 +118,10 @@ def to_ascii(text):
 def find_port():
     """First USB serial device that looks like the driver board."""
     # by-id names carry the USB-serial chip, so prefer them and favour the
-    # CP210x the board actually uses over any other adapter that is plugged in.
+    # bridges these boards actually use over any other adapter plugged in.
     by_id = sorted(glob.glob("/dev/serial/by-id/*"))
     for path in by_id:
-        if "CP210" in path or "Silicon_Labs" in path:
+        if any(tag in path for tag in ("CP210", "Silicon_Labs", "CH343", "1a86", "QinHeng")):
             return path
     if by_id:
         return by_id[0]
@@ -95,33 +136,58 @@ def find_port():
 
 
 class EPaper:
-    def __init__(self, port=PORT, baud=BAUD):
-        self.port = port or find_port()
-        self.baud = baud
+    """A connection to the panel. Safe to call from more than one thread."""
+
+    def __init__(self, config=None, **overrides):
+        # Always copy: font() writes back to config, and a Config handed to two
+        # instances must not have one instance's changes leak into the other.
+        if config is None:
+            config = Config()
+        else:
+            config = Config(**{f.name: getattr(config, f.name) for f in fields(config)})
+
+        for key, value in overrides.items():
+            if not hasattr(config, key):
+                raise TypeError(f"unknown setting {key!r}")
+            setattr(config, key, value)
+        config.__post_init__()  # re-validate after the overrides
+
+        self.config = config
+        self.port = config.port or find_port()
         self.serial = None
+
+        # gpiozero button callbacks and --watch polling run on their own
+        # threads, so two writers could otherwise interleave on the port.
+        # Reentrant because the public methods call _command() under the lock.
+        self._lock = threading.RLock()
         self._last_text = None
         self._last_send = 0.0
 
     # --- connection --------------------------------------------------------
     def open(self):
-        # Opening a port asserts DTR and RTS, which is exactly how esptool drops
-        # an ESP32 into its bootloader - so clear both before opening to leave
-        # the sketch running. pyserial applies these at open() time.
-        self.serial = serial.Serial()
-        self.serial.port = self.port
-        self.serial.baudrate = self.baud
-        self.serial.timeout = 1.0
-        self.serial.dtr = False
-        self.serial.rts = False
-        self.serial.open()
+        with self._lock:
+            # Opening a port asserts DTR and RTS, which is exactly how esptool
+            # drops an ESP32 into its bootloader - so clear both before opening
+            # to leave the sketch running. pyserial applies these at open().
+            self.serial = serial.Serial()
+            self.serial.port = self.port
+            self.serial.baudrate = self.config.baud
+            self.serial.timeout = 1.0
+            self.serial.dtr = False
+            self.serial.rts = False
+            self.serial.open()
 
-        self._wait_ready()
+            self._wait_ready()
+            # Re-assert the font, so a board that did reset matches our config.
+            self._command(f"FONT {self.config.font.upper()}")
         return self
 
     def close(self):
-        if self.serial is not None and self.serial.is_open:
-            self.serial.close()
-        self.serial = None
+        with self._lock:
+            if self.serial is not None and self.serial.is_open:
+                self.serial.close()
+            self.serial = None
+            self._last_text = None  # a reconnected board has a stale screen
 
     def __enter__(self):
         return self.open()
@@ -131,7 +197,7 @@ class EPaper:
 
     def _wait_ready(self):
         """Swallow the boot banner, or prove the sketch is alive with a PING."""
-        deadline = time.monotonic() + READY_TIMEOUT
+        deadline = time.monotonic() + self.config.ready_timeout
         while time.monotonic() < deadline:
             line = self._read_line()
             if line == "READY":
@@ -145,7 +211,7 @@ class EPaper:
         except EPaperError as error:
             raise EPaperError(
                 f"{self.port} did not answer PING ({error}). Is epaper_serial.ino "
-                f"flashed, and is the baud rate {self.baud}?"
+                f"flashed, and is the baud rate {self.config.baud}?"
             ) from error
 
     def _read_line(self):
@@ -153,66 +219,98 @@ class EPaper:
         if not raw:
             return None
         line = raw.decode("utf-8", "replace").strip()
-        if DEBUG and line:
+        if self.config.debug and line:
             print(f"  <- {line}", flush=True)
         return line or None
 
-    def _command(self, command, expect="OK", timeout=REPLY_TIMEOUT):
-        if self.serial is None:
-            raise EPaperError("Port is not open - call open() first.")
-        if DEBUG:
-            print(f"  -> {command}", flush=True)
+    def _command(self, command, expect="OK", timeout=None):
+        if timeout is None:
+            timeout = self.config.reply_timeout
 
-        self.serial.reset_input_buffer()
-        self.serial.write(to_ascii(command).encode("ascii") + b"\n")
-        self.serial.flush()
+        with self._lock:
+            if self.serial is None:
+                raise EPaperError("Port is not open - call open() first.")
+            if self.config.debug:
+                print(f"  -> {command}", flush=True)
 
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            line = self._read_line()
-            if line is None:
-                continue
-            if line == expect:
-                return line
-            if line.startswith("ERR"):
-                raise EPaperError(line)
-            # Ignore anything else: a late READY from a board that reset anyway.
-        raise EPaperError(f"No reply to {command!r} within {timeout:.0f} s.")
+            self.serial.reset_input_buffer()
+            self.serial.write(to_ascii(command).encode("ascii") + b"\n")
+            self.serial.flush()
+
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                line = self._read_line()
+                if line is None:
+                    continue
+                if line == expect:
+                    return line
+                if line.startswith("ERR"):
+                    raise EPaperError(line)
+                # Ignore anything else: a late READY from a board that reset.
+            raise EPaperError(f"No reply to {command!r} within {timeout:.0f} s.")
 
     # --- drawing -----------------------------------------------------------
     def font(self, size):
         """Type size for subsequent text(): 's', 'm' or 'l'."""
-        self._command(f"FONT {size.upper()}")
+        size = size.lower()
+        if size not in FONTS:
+            raise ValueError(f"font must be one of {FONTS}, got {size!r}")
+        with self._lock:
+            self._command(f"FONT {size.upper()}")
+            self.config.font = size
+            self._last_text = None  # same string at a new size must redraw
 
     def clear(self):
-        self._command("CLEAR")
-        self._last_text = None
+        with self._lock:
+            self._command("CLEAR")
+            self._last_text = None
 
-    def text(self, text, force=False):
+    def text(self, text, font=None, force=False):
         """Draw text, centred and word-wrapped. Use \\n for a hard line break.
 
         Redrawing the same string is skipped unless force is set, since a
-        refresh costs several seconds and a little panel life.
+        refresh costs several seconds and a little panel life. Pass font to
+        change size in the same call.
         """
-        payload = to_ascii(text).replace("\n", "\\n").strip()
-        if not payload:
-            self.clear()
-            return
+        with self._lock:
+            if font is not None and font.lower() != self.config.font:
+                self.font(font)
 
-        if payload == self._last_text and not force:
-            if DEBUG:
-                print("  (unchanged, skipping refresh)", flush=True)
-            return
+            payload = to_ascii(text).replace("\n", "\\n").strip()
+            if not payload:
+                self.clear()
+                return
 
-        wait = MIN_INTERVAL - (time.monotonic() - self._last_send)
-        if wait > 0:
-            time.sleep(wait)
+            if payload == self._last_text and not force:
+                if self.config.debug:
+                    print("  (unchanged, skipping refresh)", flush=True)
+                return
 
-        self._command(f"TEXT {payload}")
-        self._last_text = payload
-        self._last_send = time.monotonic()
+            wait = self.config.min_interval - (time.monotonic() - self._last_send)
+            if wait > 0:
+                time.sleep(wait)
+
+            self._command(f"TEXT {payload}")
+            self._last_text = payload
+            self._last_send = time.monotonic()
 
 
+def show(text, **config):
+    """Connect, draw once, disconnect.
+
+    Convenient for a one-off update, but it pays the connection cost every
+    call - hold an EPaper instance instead if you update repeatedly.
+    """
+    with EPaper(**config) as epd:
+        epd.text(text)
+
+
+def connect(**config):
+    """An open EPaper instance. Remember to close() it."""
+    return EPaper(**config).open()
+
+
+# --- CLI -------------------------------------------------------------------
 def watch_file(epd, path):
     """Redraw whenever path changes - the hook for any other process."""
     print(f"Watching {path}. Write to it to change the display. Ctrl+C to quit.",
@@ -247,19 +345,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("text", nargs="*", help="text to display")
     parser.add_argument("--port", default=PORT, help="serial port (default: autodetect)")
-    parser.add_argument("--font", choices=["s", "m", "l"], help="type size")
+    parser.add_argument("--font", choices=FONTS, default=FONT, help="type size")
     parser.add_argument("--clear", action="store_true", help="blank the screen and exit")
     parser.add_argument("--watch", metavar="FILE", help="redraw whenever FILE changes")
     parser.add_argument("--stdin", action="store_true", help="read lines from stdin")
     args = parser.parse_args()
 
     try:
-        epd = EPaper(port=args.port)
+        epd = EPaper(port=args.port, font=args.font)
         print(f"Using {epd.port}", flush=True)
         with epd:
-            if args.font:
-                epd.font(args.font)
-
             if args.clear:
                 epd.clear()
             elif args.watch:
@@ -270,7 +365,7 @@ def main():
                 epd.text(" ".join(args.text) if args.text else SAMPLE_TEXT)
     except KeyboardInterrupt:
         print("", flush=True)
-    except (EPaperError, serial.SerialException, OSError) as error:
+    except (EPaperError, ValueError, serial.SerialException, OSError) as error:
         sys.exit(f"epaper: {error}")
 
 
