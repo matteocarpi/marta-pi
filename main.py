@@ -40,8 +40,8 @@ USB_PATH = "/mnt/usb"
 # program runs and f-strings at module level would only ever be evaluated once.
 def media_paths(channel):
     return {
-        "video1": f"{USB_PATH}/{channel}/1.mp4",
-        "video2": f"{USB_PATH}/{channel}/2.mp4",
+        "video1": f"{USB_PATH}/{channel}/video_1.mp4",
+        "video2": f"{USB_PATH}/{channel}/video_2.mp4",
         "audio": f"{USB_PATH}/{channel}/1.mp3",
         "text": f"{USB_PATH}/{channel}/text.txt",
     }
