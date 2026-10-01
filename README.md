@@ -205,8 +205,8 @@ One button per channel, each between its GPIO pin and **GND**:
 |---|---|---|
 | 1 | GPIO4 | 7 |
 | 2 | GPIO17 | 11 |
-| 3 | GPIO27 | 13 |
-| 4 | GPIO22 | 15 |
+| 3 | GPIO10 | 19 |
+| 4 | GPIO6 | 31 |
 
 Uses the Pi's internal pull-up (`pull_up=True`) — no external resistor
 needed. Debounce is 50 ms.

@@ -9,8 +9,8 @@ internal pull-ups are used, so no external resistors are needed.
 
     GPIO4  (physical pin 7)  -> channel 1
     GPIO17 (physical pin 11) -> channel 2
-    GPIO27 (physical pin 13) -> channel 3
-    GPIO22 (physical pin 15) -> channel 4
+    GPIO10 (physical pin 19) -> channel 3
+    GPIO6  (physical pin 31) -> channel 4
 
 Typical use:
 
@@ -35,8 +35,8 @@ from gpiozero import Button  # python3-gpiozero, with python3-lgpio as backend
 CHANNEL_PINS = {
     4: 1,
     17: 2,
-    27: 3,
-    22: 4,
+    10: 3,
+    6: 4,
 }
 
 INITIAL_CHANNEL = 1
