@@ -42,7 +42,7 @@ def media_paths(channel):
     return {
         "video1": f"{USB_PATH}/{channel}/video_1.mp4",
         "video2": f"{USB_PATH}/{channel}/video_2.mp4",
-        "audio": f"{USB_PATH}/{channel}/1.mp3",
+        "audio": f"{USB_PATH}/{channel}/audio.mp3",
         "text": f"{USB_PATH}/{channel}/text.txt",
     }
 
@@ -215,7 +215,7 @@ def player_commands(channel):
     return [
         ("video screen 1", video_command(paths["video1"], DRM_CONNECTOR_1, SCREEN_1)),
         ("video screen 2", video_command(paths["video2"], DRM_CONNECTOR_2, SCREEN_2)),
-        # ("audio", audio_command(paths["audio"])),
+        ("audio", audio_command(paths["audio"])),
     ]
 
 
