@@ -133,6 +133,7 @@ All at the top of `main.py`:
 | `DRM_DEVICE`, `DRM_CONNECTOR_1/2` | only used by `OUTPUT_MODE = "drm"` |
 | `HWDEC` | `"no"`; see decoding note below |
 | `AUDIO_DEVICE` | `None` for mpv's default |
+| `AUDIO_VOLUME` | mpv volume 0–100; `65` keeps the PAM8403 amp from clipping |
 | `RESTART_DELAY` | seconds before respawning a player that exited |
 
 Leave `DRM_DEVICE` as `None` so mpv probes for the card that actually has

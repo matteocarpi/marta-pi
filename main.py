@@ -72,6 +72,9 @@ ARRANGE_SCREENS = True
 # List options with: mpv --audio-device=help
 AUDIO_DEVICE = None
 
+# mpv volume, 0-100. Higher overdrives the PAM8403 on the jack and it distorts.
+AUDIO_VOLUME = 65
+
 RESTART_DELAY = 2.0  # seconds to wait before respawning a player that died
 
 # How long the supervisor loop sleeps between checks. A button press interrupts
@@ -198,7 +201,7 @@ def video_command(path, connector, screen):
 
 
 def audio_command(path):
-    cmd = COMMON + ["--no-video"]
+    cmd = COMMON + ["--no-video", f"--volume={AUDIO_VOLUME}"]
     if AUDIO_DEVICE:
         cmd.append(f"--audio-device={AUDIO_DEVICE}")
     cmd.append(path)
