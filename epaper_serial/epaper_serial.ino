@@ -52,7 +52,7 @@ GxEPD2_BW<GxEPD2_750_T7, GxEPD2_750_T7::HEIGHT> display(
     GxEPD2_750_T7(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
 
 // --- Layout ----------------------------------------------------------------
-const int ROTATION = 1;  // 0 = landscape 800x480, 1 = portrait 480x800, 3 = portrait flipped
+const int ROTATION = 3;  // 0 = landscape 800x480, 1 = portrait 480x800, 3 = portrait flipped
 const int MARGIN = 24;   // px kept clear on the left and right
 const int MAX_LINES = 20;
 const size_t MAX_COMMAND = 600;  // longer lines are truncated
