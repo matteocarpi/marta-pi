@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Three pushbuttons that select the current channel.
+"""Four pushbuttons that select the current channel.
 
 This is the only module that touches gpiozero. main.py imports ChannelButtons
 from here and reads .current_channel; nothing else needs to know about GPIO.
@@ -10,6 +10,7 @@ internal pull-ups are used, so no external resistors are needed.
     GPIO4  (physical pin 7)  -> channel 1
     GPIO17 (physical pin 11) -> channel 2
     GPIO27 (physical pin 13) -> channel 3
+    GPIO22 (physical pin 15) -> channel 4
 
 Typical use:
 
@@ -17,7 +18,7 @@ Typical use:
 
     buttons = ChannelButtons(on_change=lambda ch: print(ch)).start()
     ...
-    buttons.current_channel   # 1, 2 or 3
+    buttons.current_channel   # 1, 2, 3 or 4
     buttons.stop()
 
 Run it directly to check the wiring:
@@ -30,11 +31,12 @@ import threading
 from gpiozero import Button  # python3-gpiozero, with python3-lgpio as backend
 
 # --- Wiring ----------------------------------------------------------------
-# BCM pin -> channel number. Add a fourth button by adding a line here.
+# BCM pin -> channel number.
 CHANNEL_PINS = {
     4: 1,
     17: 2,
     27: 3,
+    22: 4,
 }
 
 INITIAL_CHANNEL = 1

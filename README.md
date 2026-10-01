@@ -199,8 +199,16 @@ repo.
 The GPIO packages are installed for button-triggered playback, which is not yet
 part of `main.py` (an earlier standalone button script is in the git history).
 
-Button between **GPIO4** (BCM 4, physical pin 7) and **GND** (physical pin 6 or
-9). Uses the Pi's internal pull-up (`pull_up=True`) — no external resistor
+One button per channel, each between its GPIO pin and **GND**:
+
+| Channel | GPIO (BCM) | Physical pin |
+|---|---|---|
+| 1 | GPIO4 | 7 |
+| 2 | GPIO17 | 11 |
+| 3 | GPIO27 | 13 |
+| 4 | GPIO22 | 15 |
+
+Uses the Pi's internal pull-up (`pull_up=True`) — no external resistor
 needed. Debounce is 50 ms.
 
 ## Updating a device
