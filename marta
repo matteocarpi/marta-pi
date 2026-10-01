@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+"""Control marta-pi while it plays.
+
+    marta channel 3      switch to channel 3
+    marta volume 50      set the volume (0-100)
+    marta volume +5      louder by 5 (or -5 for quieter)
+    marta status         show the current channel and volume
+    marta start          start the service
+    marta stop           stop the service
+"""
+
+import socket
+import subprocess
+import sys
+
+CONTROL_SOCKET = "/tmp/marta-pi.sock"  # must match main.py
+SERVICE = "marta-pi"
+
+
+def send(*words):
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+            conn.settimeout(5.0)
+            conn.connect(CONTROL_SOCKET)
+            conn.sendall((" ".join(words) + "\n").encode())
+            reply = conn.makefile().readline().strip()
+    except (FileNotFoundError, ConnectionRefusedError):
+        sys.exit("marta-pi is not running (start it with: marta start).")
+    print(reply)
+    if reply.startswith("error"):
+        sys.exit(1)
+
+
+def systemctl(action):
+    sys.exit(subprocess.call(["sudo", "systemctl", action, SERVICE]))
+
+
+def main(args):
+    if args in (["start"], ["stop"]):
+        systemctl(args[0])
+    if args == ["status"]:
+        send("status")
+        return
+    if len(args) == 2 and args[0] in ("channel", "volume"):
+        send(*args)
+        return
+    sys.exit(__doc__.strip())
+
+
+main(sys.argv[1:])

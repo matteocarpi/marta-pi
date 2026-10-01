@@ -109,6 +109,27 @@ The unit also waits for `/mnt/usb` to be mounted, and restarts playback after
 
 Stop it while working by hand: `sudo systemctl stop marta-pi`.
 
+## Control
+
+`marta` changes things while the videos play. Install it once:
+
+```bash
+chmod +x marta
+sudo ln -sf /home/admin/marta-pi/marta /usr/local/bin/marta
+```
+
+| Command | Does |
+| --- | --- |
+| `marta channel 3` | switch channel, same as pressing its button |
+| `marta volume 50` | set the volume, 0–100 |
+| `marta volume +5` / `marta volume -5` | louder / quieter |
+| `marta status` | current channel and volume |
+| `marta start` / `marta stop` | start / stop the service |
+
+Channel and volume go through `/tmp/marta-pi.sock` to the running `main.py`,
+so they work over SSH. A volume set this way lasts until `main.py` restarts,
+which resets it to `AUDIO_VOLUME`.
+
 ## Why X is required
 
 On bare KMS only one process can hold DRM master per card, so a second `mpv`

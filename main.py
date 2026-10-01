@@ -6,9 +6,11 @@ SIGTERM. Sound comes from video_1's own audio track; video_2 plays muted.
 """
 
 import glob
+import json
 import os
 import shlex
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -73,6 +75,13 @@ AUDIO_DEVICE = None
 
 # mpv volume, 0-100. Higher overdrives the PAM8403 on the jack and it distorts.
 AUDIO_VOLUME = 65
+
+# `marta` (the control script) talks to CONTROL_SOCKET; main.py in turn sets the
+# volume on the audio player through mpv's own IPC socket.
+CONTROL_SOCKET = "/tmp/marta-pi.sock"
+MPV_SOCKET = "/tmp/marta-pi-mpv.sock"
+
+audio_volume = AUDIO_VOLUME  # changed at runtime by `marta volume`
 
 RESTART_DELAY = 2.0  # seconds to wait before respawning a player that died
 
@@ -174,7 +183,7 @@ def arrange_screens():
 def video_command(path, connector, screen, audio=False):
     command = COMMON + ["--fullscreen", f"--hwdec={HWDEC}"]
     if audio:
-        command.append(f"--volume={AUDIO_VOLUME}")
+        command += [f"--volume={audio_volume}", f"--input-ipc-server={MPV_SOCKET}"]
         if AUDIO_DEVICE:
             command.append(f"--audio-device={AUDIO_DEVICE}")
     else:
@@ -283,6 +292,7 @@ signal.signal(signal.SIGTERM, shutdown)
 # mutation of `players` stays on the main thread, the supervisor loop below can
 # never race with a switch.
 requested_channel = current_channel
+requested_volume = audio_volume
 switch_request = threading.Event()
 panel_request = threading.Event()
 
@@ -312,6 +322,29 @@ def switch_channel(channel):
         f"Channel {channel} playing ({(time.monotonic() - started) * 1000:.0f} ms).",
         flush=True,
     )
+
+
+def set_volume(volume):
+    """Apply a new volume to the running player and to future ones.
+
+    Main thread only, called from play().
+    """
+    global audio_volume
+    audio_volume = volume
+    # So a respawn or channel switch keeps the new volume.
+    for player, (_, command) in zip(players, player_commands(current_channel)):
+        player.command = command
+
+    message = {"command": ["set_property", "volume", volume]}
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+            conn.settimeout(1.0)
+            conn.connect(MPV_SOCKET)
+            conn.sendall(json.dumps(message).encode() + b"\n")
+    except OSError as error:
+        # Usually mpv is mid-restart; it will start with the new volume anyway.
+        print(f"Warning: could not reach mpv ({error}).", flush=True)
+    print(f"Volume {volume}.", flush=True)
 
 
 def show_image(channel):
@@ -356,6 +389,71 @@ def on_channel_change(channel):
     panel_request.set()
 
 
+def handle_control(words):
+    """Run one request from `marta` and return the reply line.
+
+    Runs on the control thread, so like the buttons it only hands requests to
+    the main thread rather than touching the players itself.
+    """
+    global requested_volume
+    if words == ["status"]:
+        return f"channel {requested_channel} volume {requested_volume}"
+
+    if len(words) == 2 and words[0] == "channel":
+        channel = int(words[1])
+        if not os.path.isdir(f"{USB_PATH}/{channel}"):
+            raise ValueError(f"no folder for channel {channel} in {USB_PATH}")
+        if buttons is not None:
+            buttons.select(channel)  # keeps the buttons' idea of "current" right
+        else:
+            on_channel_change(channel)
+        return f"channel {channel}"
+
+    if len(words) == 2 and words[0] == "volume":
+        value = words[1]
+        volume = int(value)
+        if value[0] in "+-":
+            volume += requested_volume
+        requested_volume = max(0, min(100, volume))
+        switch_request.set()
+        return f"volume {requested_volume}"
+
+    raise ValueError(f"unknown command: {' '.join(words)}")
+
+
+def control_loop(server):
+    while running:
+        try:
+            conn, _ = server.accept()
+        except socket.timeout:
+            continue
+        except OSError:
+            return
+        with conn:
+            conn.settimeout(1.0)
+            try:
+                words = conn.makefile().readline().split()
+                reply = handle_control(words)
+            except Exception as error:
+                reply = f"error: {error}"
+            try:
+                conn.sendall((reply + "\n").encode())
+            except OSError:
+                pass
+
+
+def open_control_socket():
+    try:
+        os.unlink(CONTROL_SOCKET)  # left over from a previous run
+    except FileNotFoundError:
+        pass
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(CONTROL_SOCKET)
+    server.listen()
+    server.settimeout(POLL_INTERVAL)
+    return server
+
+
 epd = None
 panel_thread = None
 if EPaper is not None:
@@ -377,6 +475,16 @@ if ChannelButtons is not None:
         print(f"Warning: buttons unavailable ({error}).", flush=True)
 
 
+control_server = None
+try:
+    control_server = open_control_socket()
+    threading.Thread(
+        target=control_loop, args=(control_server,), name="control", daemon=True
+    ).start()
+except OSError as error:
+    print(f"Warning: control socket unavailable ({error}).", flush=True)
+
+
 def play():
     global running
     try:
@@ -389,6 +497,8 @@ def play():
         while running:
             if requested_channel != current_channel:
                 switch_channel(requested_channel)
+            if requested_volume != audio_volume:
+                set_volume(requested_volume)
 
             for player in players:
                 if not player.is_running() and running:
@@ -408,6 +518,12 @@ def play():
         running = False  # tells the panel thread to wind up too
         for player in players:
             player.stop()
+        if control_server is not None:
+            control_server.close()
+            try:
+                os.unlink(CONTROL_SOCKET)
+            except OSError:
+                pass
         if buttons is not None:
             buttons.stop()
         if panel_thread is not None:
