@@ -1,6 +1,6 @@
 # marta-pi
 
-Looping video on both HDMI outputs of a Raspberry Pi, plus a looping audio track.
+Looping video on both HDMI outputs of a Raspberry Pi. Sound comes from `video_1.mp4`'s own audio track.
 
 ## Target
 
@@ -126,13 +126,13 @@ All at the top of `main.py`:
 
 | Setting | Meaning |
 | --- | --- |
-| `VIDEO_HDMI_1`, `VIDEO_HDMI_2`, `AUDIO_TRACK` | media paths |
+| `media_paths()` | per-channel `video_1.mp4`, `video_2.mp4`, `text.jpg` on the USB stick |
 | `OUTPUT_MODE` | `"session"` for X/Wayland (two screens), `"drm"` for bare KMS (one screen) |
 | `SCREEN_1`, `SCREEN_2` | which screen each video goes to; swap if they come out reversed |
 | `ARRANGE_SCREENS` | set `False` to skip the `xrandr` layout call |
 | `DRM_DEVICE`, `DRM_CONNECTOR_1/2` | only used by `OUTPUT_MODE = "drm"` |
 | `HWDEC` | `"no"`; see decoding note below |
-| `AUDIO_DEVICE` | `None` for mpv's default |
+| `AUDIO_DEVICE` | `None` for mpv's default; applies to the screen-1 player |
 | `AUDIO_VOLUME` | mpv volume 0–100; `65` keeps the PAM8403 amp from clipping |
 | `RESTART_DELAY` | seconds before respawning a player that exited |
 

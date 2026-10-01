@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Loop a video on each HDMI output and an audio track, forever.
+"""Loop a video on each HDMI output, forever.
 
-Spawns three mpv processes (one per HDMI connector, one for audio) and keeps
-them alive until Ctrl+C / SIGTERM.
+Spawns one mpv process per HDMI connector and keeps them alive until Ctrl+C /
+SIGTERM. Sound comes from video_1's own audio track; video_2 plays muted.
 """
 
 import glob
@@ -42,7 +42,6 @@ def media_paths(channel):
     return {
         "video1": f"{USB_PATH}/{channel}/video_1.mp4",
         "video2": f"{USB_PATH}/{channel}/video_2.mp4",
-        "audio": f"{USB_PATH}/{channel}/audio.mp3",
         "image": f"{USB_PATH}/{channel}/text.jpg",
     }
 
@@ -172,12 +171,14 @@ def arrange_screens():
         print(f"Warning: xrandr layout failed ({error}).", flush=True)
 
 
-def video_command(path, connector, screen):
-    command = COMMON + [
-        "--no-audio",
-        "--fullscreen",
-        f"--hwdec={HWDEC}",
-    ]
+def video_command(path, connector, screen, audio=False):
+    command = COMMON + ["--fullscreen", f"--hwdec={HWDEC}"]
+    if audio:
+        command.append(f"--volume={AUDIO_VOLUME}")
+        if AUDIO_DEVICE:
+            command.append(f"--audio-device={AUDIO_DEVICE}")
+    else:
+        command.append("--no-audio")
     if OUTPUT_MODE == "drm":
         check_connector(connector)
         command += [
@@ -200,14 +201,6 @@ def video_command(path, connector, screen):
     return command
 
 
-def audio_command(path):
-    cmd = COMMON + ["--no-video", f"--volume={AUDIO_VOLUME}"]
-    if AUDIO_DEVICE:
-        cmd.append(f"--audio-device={AUDIO_DEVICE}")
-    cmd.append(path)
-    return cmd
-
-
 def player_commands(channel):
     """(name, argv) for every player, for one channel.
 
@@ -216,9 +209,11 @@ def player_commands(channel):
     """
     paths = media_paths(channel)
     return [
-        ("video screen 1", video_command(paths["video1"], DRM_CONNECTOR_1, SCREEN_1)),
+        (
+            "video screen 1",
+            video_command(paths["video1"], DRM_CONNECTOR_1, SCREEN_1, audio=True),
+        ),
         ("video screen 2", video_command(paths["video2"], DRM_CONNECTOR_2, SCREEN_2)),
-        ("audio", audio_command(paths["audio"])),
     ]
 
 
