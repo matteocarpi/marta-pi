@@ -44,8 +44,22 @@ def media_paths(channel):
     return {
         "video1": f"{USB_PATH}/{channel}/video_1.mp4",
         "video2": f"{USB_PATH}/{channel}/video_2.mp4",
-        "image": f"{USB_PATH}/{channel}/text.jpg",
     }
+
+
+def channel_image(channel):
+    """The first JPEG in the channel's folder, or None if there is none.
+
+    Dotfiles are skipped: a Mac copying to the stick leaves "._name.jpg"
+    metadata files beside the real ones, and they are not images.
+    """
+    folder = f"{USB_PATH}/{channel}"
+    names = sorted(
+        name
+        for name in os.listdir(folder)
+        if not name.startswith(".") and name.lower().endswith((".jpg", ".jpeg"))
+    )
+    return os.path.join(folder, names[0]) if names else None
 
 
 # --- Output configuration --------------------------------------------------
@@ -351,7 +365,14 @@ def show_image(channel):
     """Put the channel's image on the e-paper. Panel thread only."""
     if epd is None:
         return
-    path = media_paths(channel)["image"]
+    try:
+        path = channel_image(channel)
+    except OSError as error:
+        print(f"Warning: cannot list channel {channel} ({error}).", flush=True)
+        return
+    if path is None:
+        print(f"Warning: no .jpg in {USB_PATH}/{channel}.", flush=True)
+        return
     try:
         epd.image(path)
     except OSError as error:

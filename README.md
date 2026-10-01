@@ -147,7 +147,7 @@ All at the top of `main.py`:
 
 | Setting | Meaning |
 | --- | --- |
-| `media_paths()` | per-channel `video_1.mp4`, `video_2.mp4`, `text.jpg` on the USB stick |
+| `media_paths()` | per-channel `video_1.mp4`, `video_2.mp4` and the folder's first `.jpg` on the USB stick |
 | `OUTPUT_MODE` | `"session"` for X/Wayland (two screens), `"drm"` for bare KMS (one screen) |
 | `SCREEN_1`, `SCREEN_2` | which screen each video goes to; swap if they come out reversed |
 | `ARRANGE_SCREENS` | set `False` to skip the `xrandr` layout call |
