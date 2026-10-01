@@ -43,7 +43,7 @@ def media_paths(channel):
         "video1": f"{USB_PATH}/{channel}/video_1.mp4",
         "video2": f"{USB_PATH}/{channel}/video_2.mp4",
         "audio": f"{USB_PATH}/{channel}/audio.mp3",
-        "text": f"{USB_PATH}/{channel}/text.txt",
+        "image": f"{USB_PATH}/{channel}/text.jpg",
     }
 
 
@@ -319,14 +319,13 @@ def switch_channel(channel):
     )
 
 
-def show_text(channel):
-    """Put the channel's text file on the e-paper. Panel thread only."""
+def show_image(channel):
+    """Put the channel's image on the e-paper. Panel thread only."""
     if epd is None:
         return
-    path = media_paths(channel)["text"]
+    path = media_paths(channel)["image"]
     try:
-        with open(path, encoding="utf-8") as handle:
-            epd.text(handle.read())
+        epd.image(path)
     except OSError as error:
         print(f"Warning: cannot read {path} ({error}).", flush=True)
     except Exception as error:
@@ -346,7 +345,7 @@ def panel_loop():
         fired = panel_request.wait(timeout=POLL_INTERVAL)
         panel_request.clear()
         if fired and running:
-            show_text(requested_channel)
+            show_image(requested_channel)
 
 
 def on_channel_change(channel):

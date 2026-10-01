@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Show text on the Waveshare 7.5" e-paper panel over USB.
+"""Show text or images on the Waveshare 7.5" e-paper panel over USB.
 
 The panel hangs off a Waveshare e-Paper ESP32 Driver Board, so the Pi never
-touches SPI - it sends lines of text to the sketch in epaper_serial/ and the
+touches SPI - it sends lines of text, or a 1-bit bitmap, to the sketch in epaper_serial/ and the
 ESP32 does the drawing.
 
 Use it from another script - keep one instance alive and call text() as often
@@ -13,6 +13,7 @@ as you like, since opening the port costs a second or two:
     epd = EPaper(font="m").open()
     epd.text("Hello")
     epd.text("Changed")
+    epd.image("/mnt/usb/1/text.jpg")    # scaled and cropped to fill the panel
     epd.close()
 
 Config is keyword arguments, or a Config instance if you'd rather build it up:
@@ -34,6 +35,7 @@ It is also a CLI:
     ./epaper.py "Hello Marta"            one-shot
     ./epaper.py --font m "Two\\nlines"    smaller type, explicit line break
     ./epaper.py --clear                  blank the screen
+    ./epaper.py --image picture.jpg      show an image full screen
     ./epaper.py --watch /path/to/file    redraw whenever the file changes
     echo "from a pipe" | ./epaper.py --stdin
 """
@@ -48,6 +50,7 @@ import unicodedata
 from dataclasses import dataclass, fields
 
 import serial  # python3-serial
+from PIL import Image, ImageOps  # python3-pil
 
 # --- Defaults --------------------------------------------------------------
 # Every one of these is overridable per instance; see Config below.
@@ -59,6 +62,10 @@ PORT = None
 BAUD = 115200
 
 FONT = "l"  # "s" 12pt, "m" 18pt, "l" 24pt - must match epaper_serial.ino
+
+# Panel size as the sketch sees it - must follow ROTATION in epaper_serial.ino.
+WIDTH = 480
+HEIGHT = 800
 
 # The board reboots whenever the port is opened on some setups, and panel init
 # takes a moment after that.
@@ -97,6 +104,8 @@ class Config:
     port: str = PORT
     baud: int = BAUD
     font: str = FONT
+    width: int = WIDTH
+    height: int = HEIGHT
     min_interval: float = MIN_INTERVAL
     ready_timeout: float = READY_TIMEOUT
     reply_timeout: float = REPLY_TIMEOUT
@@ -113,6 +122,22 @@ def to_ascii(text):
         text = text.replace(source, target)
     decomposed = unicodedata.normalize("NFKD", text)
     return decomposed.encode("ascii", "ignore").decode("ascii")
+
+
+def prepare_image(path, size):
+    """Image file -> packed 1-bit bitmap filling size, 1 bits white."""
+    with Image.open(path) as source:
+        picture = ImageOps.exif_transpose(source)
+        if "A" in picture.getbands() or "transparency" in picture.info:
+            picture = picture.convert("RGBA")
+            background = Image.new("RGBA", picture.size, "white")
+            picture = Image.alpha_composite(background, picture)
+        picture = picture.convert("L")
+    # Cover the panel, cropping the overflow, rather than letterboxing.
+    picture = ImageOps.fit(picture, size, Image.Resampling.LANCZOS)
+    # Floyd-Steinberg dithering; PIL packs mode "1" rows MSB first, 1 = white,
+    # which is what the sketch expects.
+    return picture.convert("1").tobytes()
 
 
 def find_port():
@@ -160,7 +185,7 @@ class EPaper:
         # threads, so two writers could otherwise interleave on the port.
         # Reentrant because the public methods call _command() under the lock.
         self._lock = threading.RLock()
-        self._last_text = None
+        self._last_shown = None
         self._last_send = 0.0
 
     # --- connection --------------------------------------------------------
@@ -187,7 +212,7 @@ class EPaper:
             if self.serial is not None and self.serial.is_open:
                 self.serial.close()
             self.serial = None
-            self._last_text = None  # a reconnected board has a stale screen
+            self._last_shown = None  # a reconnected board has a stale screen
 
     def __enter__(self):
         return self.open()
@@ -224,9 +249,6 @@ class EPaper:
         return line or None
 
     def _command(self, command, expect="OK", timeout=None):
-        if timeout is None:
-            timeout = self.config.reply_timeout
-
         with self._lock:
             if self.serial is None:
                 raise EPaperError("Port is not open - call open() first.")
@@ -236,7 +258,13 @@ class EPaper:
             self.serial.reset_input_buffer()
             self.serial.write(to_ascii(command).encode("ascii") + b"\n")
             self.serial.flush()
+            return self._await(command, expect, timeout)
 
+    def _await(self, command, expect, timeout=None):
+        if timeout is None:
+            timeout = self.config.reply_timeout
+
+        with self._lock:
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
                 line = self._read_line()
@@ -258,12 +286,12 @@ class EPaper:
         with self._lock:
             self._command(f"FONT {size.upper()}")
             self.config.font = size
-            self._last_text = None  # same string at a new size must redraw
+            self._last_shown = None  # same string at a new size must redraw
 
     def clear(self):
         with self._lock:
             self._command("CLEAR")
-            self._last_text = None
+            self._last_shown = None
 
     def text(self, text, font=None, force=False):
         """Draw text, centred and word-wrapped. Use \\n for a hard line break.
@@ -281,18 +309,45 @@ class EPaper:
                 self.clear()
                 return
 
-            if payload == self._last_text and not force:
+            if payload == self._last_shown and not force:
                 if self.config.debug:
                     print("  (unchanged, skipping refresh)", flush=True)
                 return
 
-            wait = self.config.min_interval - (time.monotonic() - self._last_send)
-            if wait > 0:
-                time.sleep(wait)
-
+            self._throttle()
             self._command(f"TEXT {payload}")
-            self._last_text = payload
+            self._last_shown = payload
             self._last_send = time.monotonic()
+
+    def image(self, path, force=False):
+        """Draw an image file (JPG, PNG, ...) full screen, in black and white.
+
+        It is scaled to cover the panel and the overflow cropped, so for an
+        exact fit make it 480x800. Unchanged images are skipped like text().
+        """
+        width, height = self.config.width, self.config.height
+        bitmap = prepare_image(path, (width, height))
+
+        with self._lock:
+            if bitmap == self._last_shown and not force:
+                if self.config.debug:
+                    print("  (unchanged, skipping refresh)", flush=True)
+                return
+
+            self._throttle()
+            self._command(f"IMAGE {width} {height}", expect="SEND")
+            if self.config.debug:
+                print(f"  -> {len(bitmap)} bytes of bitmap", flush=True)
+            self.serial.write(bitmap)
+            self.serial.flush()
+            self._await("IMAGE data", "OK")
+            self._last_shown = bitmap
+            self._last_send = time.monotonic()
+
+    def _throttle(self):
+        wait = self.config.min_interval - (time.monotonic() - self._last_send)
+        if wait > 0:
+            time.sleep(wait)
 
 
 def show(text, **config):
@@ -347,6 +402,7 @@ def main():
     parser.add_argument("--port", default=PORT, help="serial port (default: autodetect)")
     parser.add_argument("--font", choices=FONTS, default=FONT, help="type size")
     parser.add_argument("--clear", action="store_true", help="blank the screen and exit")
+    parser.add_argument("--image", metavar="FILE", help="show an image full screen")
     parser.add_argument("--watch", metavar="FILE", help="redraw whenever FILE changes")
     parser.add_argument("--stdin", action="store_true", help="read lines from stdin")
     args = parser.parse_args()
@@ -357,6 +413,8 @@ def main():
         with epd:
             if args.clear:
                 epd.clear()
+            elif args.image:
+                epd.image(args.image)
             elif args.watch:
                 watch_file(epd, args.watch)
             elif args.stdin:

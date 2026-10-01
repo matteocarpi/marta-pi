@@ -1,15 +1,17 @@
 /*
- * Text renderer for a Waveshare 7.5" 800x480 B/W e-paper panel on the Waveshare
+ * Text and image renderer for a Waveshare 7.5" 800x480 B/W e-paper panel on the Waveshare
  * e-Paper ESP32 Driver Board.
  *
  * Reads newline-terminated commands from USB serial and draws them. The panel
- * never decides anything; the Raspberry Pi side (../epaper.py) sends text.
+ * never decides anything; the Raspberry Pi side (../epaper.py) sends text or bitmaps.
  *
  * Protocol (one command per line, replies are one line each):
  *   PING           -> PONG
  *   CLEAR          -> OK          blank the screen
  *   FONT S|M|L     -> OK          12 / 18 / 24 pt, applies to the next TEXT
  *   TEXT <string>  -> OK          word-wrapped and centred; \n starts a new line
+ *   IMAGE <w> <h>  -> SEND        then w*h/8 raw bytes follow, 1 bit per pixel,
+ *                  -> OK          rows MSB first, 1 = white; drawn full screen
  * Anything else    -> ERR <why>
  * On boot the sketch emits READY once the panel is initialised.
  *
@@ -50,10 +52,14 @@ GxEPD2_BW<GxEPD2_750_T7, GxEPD2_750_T7::HEIGHT> display(
     GxEPD2_750_T7(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
 
 // --- Layout ----------------------------------------------------------------
-const int ROTATION = 0;  // 0 = landscape 800x480, 1 = portrait 480x800
+const int ROTATION = 1;  // 0 = landscape 800x480, 1 = portrait 480x800, 3 = portrait flipped
 const int MARGIN = 24;   // px kept clear on the left and right
 const int MAX_LINES = 20;
 const size_t MAX_COMMAND = 600;  // longer lines are truncated
+
+const size_t IMAGE_BYTES = (size_t)GxEPD2_750_T7::WIDTH * GxEPD2_750_T7::HEIGHT / 8;
+const unsigned long IMAGE_TIMEOUT_MS = 15000;  // 48000 bytes at 115200 baud is ~4 s
+uint8_t g_image[IMAGE_BYTES];
 
 const GFXfont *g_font = &FreeSansBold24pt7b;
 
@@ -156,6 +162,44 @@ void render() {
   display.hibernate();
 }
 
+// The bitmap's set bits are white, so paint black and draw the bits on top.
+void renderImage() {
+  display.setRotation(ROTATION);
+  display.setFullWindow();
+  display.firstPage();
+  do {
+    display.fillScreen(GxEPD_BLACK);
+    display.drawBitmap(0, 0, g_image, display.width(), display.height(), GxEPD_WHITE);
+  } while (display.nextPage());
+  display.hibernate();
+}
+
+void receiveImage(String args) {
+  args.trim();
+  const int space = args.indexOf(' ');
+  const int w = args.substring(0, space).toInt();
+  const int h = args.substring(space + 1).toInt();
+
+  display.setRotation(ROTATION);
+  if (space < 0 || w != display.width() || h != display.height()) {
+    Serial.print("ERR image must be ");
+    Serial.print(display.width());
+    Serial.print("x");
+    Serial.println(display.height());
+    return;
+  }
+
+  Serial.println("SEND");
+  const size_t received = Serial.readBytes(g_image, IMAGE_BYTES);
+  if (received != IMAGE_BYTES) {
+    Serial.print("ERR image truncated at ");
+    Serial.println(received);
+    return;
+  }
+  renderImage();
+  Serial.println("OK");
+}
+
 void clearScreen() {
   display.setRotation(ROTATION);
   display.setFullWindow();
@@ -208,12 +252,20 @@ void handleCommand(const String &raw) {
     return;
   }
 
+  if (line.startsWith("IMAGE ")) {
+    receiveImage(line.substring(6));
+    return;
+  }
+
   Serial.print("ERR unknown command: ");
   Serial.println(line);
 }
 
 void setup() {
+  // The default 256-byte RX buffer is too tight for a 48000-byte image burst.
+  Serial.setRxBufferSize(4096);
   Serial.begin(115200);
+  Serial.setTimeout(IMAGE_TIMEOUT_MS);
 
   // Passing 0 as the diagnostic bitrate keeps GxEPD2 from printing its own
   // chatter onto the same serial line the protocol runs over.

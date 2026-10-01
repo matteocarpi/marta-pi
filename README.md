@@ -25,7 +25,7 @@ Install:
 ```bash
 sudo apt update
 sudo apt install -y git mpv xserver-xorg xinit x11-xserver-utils \
-    python3-gpiozero python3-lgpio python3-serial
+    python3-gpiozero python3-lgpio python3-serial python3-pil
 ```
 
 Opening the serial port also needs group membership, which only takes effect
