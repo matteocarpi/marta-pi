@@ -232,6 +232,10 @@ One button per channel, each between its GPIO pin and **GND**:
 Uses the Pi's internal pull-up (`pull_up=True`) — no external resistor
 needed. Debounce is 50 ms.
 
+Holding **any two buttons together for 5 s** restarts playback: `main.py`
+exits and systemd starts it again after `RestartSec` (5 s). Run by hand rather
+than as the service, it just quits.
+
 ## Updating a device
 
 ```bash

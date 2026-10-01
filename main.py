@@ -475,6 +475,14 @@ def open_control_socket():
     return server
 
 
+def on_combo():
+    """Two buttons held: quit, and let systemd's Restart=always start us again."""
+    global running
+    print("Two buttons held, restarting.", flush=True)
+    running = False
+    switch_request.set()  # wake play() so it shuts down now
+
+
 epd = None
 panel_thread = None
 if EPaper is not None:
@@ -489,7 +497,7 @@ buttons = None
 if ChannelButtons is not None:
     try:
         buttons = ChannelButtons(
-            initial=current_channel, on_change=on_channel_change
+            initial=current_channel, on_change=on_channel_change, on_combo=on_combo
         ).start()
         print(f"Buttons ready, channel {buttons.current_channel}.", flush=True)
     except Exception as error:

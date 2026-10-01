@@ -41,23 +41,29 @@ CHANNEL_PINS = {
 
 INITIAL_CHANNEL = 1
 BOUNCE_TIME = 0.05  # seconds, matching the wiring notes in README.md
+COMBO_HOLD_TIME = 5.0  # seconds any two buttons must be held for on_combo
 
 
 class ChannelButtons:
     """Tracks which channel the buttons have selected.
 
     on_change, if given, is called with the new channel number whenever it
-    changes. It runs on a worker thread rather than inline, because gpiozero
+    changes. on_combo, if given, is called with no arguments once any two
+    buttons have been held down together for combo_hold_time seconds. It runs on a worker thread rather than inline, because gpiozero
     callbacks must return promptly - an e-paper refresh takes about 7 s, and
     doing that in the callback would swallow presses in the meantime.
     """
 
     def __init__(self, pins=None, initial=INITIAL_CHANNEL, on_change=None,
-                 bounce_time=BOUNCE_TIME):
+                 bounce_time=BOUNCE_TIME, on_combo=None,
+                 combo_hold_time=COMBO_HOLD_TIME):
         self.pins = dict(pins if pins is not None else CHANNEL_PINS)
         self._channel = initial
         self._on_change = on_change
         self._bounce_time = bounce_time
+        self._on_combo = on_combo
+        self._combo_hold_time = combo_hold_time
+        self._combo_timer = None
 
         self._lock = threading.Lock()
         # gpiozero stops delivering events once a Button is garbage collected,
@@ -96,6 +102,7 @@ class ChannelButtons:
             for pin, channel in sorted(self.pins.items()):
                 button = Button(pin, pull_up=True, bounce_time=self._bounce_time)
                 button.when_pressed = self._handler(channel)
+                button.when_released = self._check_combo
                 self._buttons.append(button)
         except Exception:
             # Half-claimed pins would stay held until the process exits, and a
@@ -107,6 +114,7 @@ class ChannelButtons:
     def stop(self):
         self._running = False
         self._wake.set()
+        self._cancel_combo()
 
         for button in self._buttons:
             button.close()
@@ -128,8 +136,45 @@ class ChannelButtons:
         # which button fired.
         def pressed():
             self.select(channel)
+            self._check_combo()
 
         return pressed
+
+    def _held_count(self):
+        return sum(1 for button in self._buttons if button.is_pressed)
+
+    def _check_combo(self):
+        """Start the combo timer when two buttons are down, cancel it otherwise."""
+        if self._on_combo is None:
+            return
+        with self._lock:
+            if self._held_count() >= 2:
+                if self._combo_timer is None:
+                    self._combo_timer = threading.Timer(
+                        self._combo_hold_time, self._fire_combo
+                    )
+                    self._combo_timer.daemon = True
+                    self._combo_timer.start()
+            elif self._combo_timer is not None:
+                self._combo_timer.cancel()
+                self._combo_timer = None
+
+    def _cancel_combo(self):
+        with self._lock:
+            if self._combo_timer is not None:
+                self._combo_timer.cancel()
+                self._combo_timer = None
+
+    def _fire_combo(self):
+        with self._lock:
+            self._combo_timer = None
+            # A release can race the timer expiring, so check again.
+            if not self._running or self._held_count() < 2:
+                return
+        try:
+            self._on_combo()
+        except Exception as error:
+            print(f"Warning: combo callback failed ({error}).", flush=True)
 
     def select(self, channel):
         """Set the channel as though its button had been pressed.
@@ -173,7 +218,10 @@ class ChannelButtons:
 if __name__ == "__main__":
     import signal
 
-    buttons = ChannelButtons(on_change=lambda ch: print(f"channel {ch}", flush=True))
+    buttons = ChannelButtons(
+        on_change=lambda ch: print(f"channel {ch}", flush=True),
+        on_combo=lambda: print("two buttons held - restart", flush=True),
+    )
     with buttons:
         print(
             f"Listening on GPIO {', '.join(str(p) for p in sorted(buttons.pins))}. "
