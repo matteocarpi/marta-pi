@@ -82,6 +82,11 @@ MIN_INTERVAL = 3.0
 BLACK_POINT = 30  # grey levels at or below this print solid black
 WHITE_POINT = 225  # and at or above this solid white, with no dither specks
 
+# Images with fewer mid-grey pixels than this fraction are treated as line art
+# (scanned text, sheet music) and thresholded instead of dithered.
+LINE_ART_MIDTONES = 0.2
+LINE_ART_THRESHOLD = 200  # brighter than this is white; lower keeps lines thinner
+
 WATCH_POLL = 0.5  # seconds between mtime checks in --watch mode
 
 SAMPLE_TEXT = "Hello Marta\\nthe panel works"
@@ -136,8 +141,15 @@ def prepare_image(path, size):
             background = Image.new("RGBA", picture.size, "white")
             picture = Image.alpha_composite(background, picture)
         picture = picture.convert("L")
+    histogram = picture.histogram()
+    line_art = sum(histogram[60:200]) / sum(histogram) < LINE_ART_MIDTONES
     # Cover the panel, cropping the overflow, rather than letterboxing.
     picture = ImageOps.fit(picture, size, Image.Resampling.LANCZOS)
+    if line_art:
+        # Downscaling turns thin black lines grey, and dithering grey breaks
+        # them into dots - so scans of text or sheet music get a hard cutoff.
+        picture = picture.point(lambda v: 255 if v > LINE_ART_THRESHOLD else 0)
+        return picture.convert("1", dither=Image.Dither.NONE).tobytes()
     # JPEG "white" is really off-white plus compression noise, which the dither
     # turns into stray black specks - so clip both ends to pure before it runs.
     span = WHITE_POINT - BLACK_POINT
