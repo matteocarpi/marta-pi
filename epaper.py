@@ -79,6 +79,9 @@ REPLY_TIMEOUT = 30.0
 # rate-limited rather than queued.
 MIN_INTERVAL = 3.0
 
+BLACK_POINT = 30  # grey levels at or below this print solid black
+WHITE_POINT = 225  # and at or above this solid white, with no dither specks
+
 WATCH_POLL = 0.5  # seconds between mtime checks in --watch mode
 
 SAMPLE_TEXT = "Hello Marta\\nthe panel works"
@@ -135,6 +138,13 @@ def prepare_image(path, size):
         picture = picture.convert("L")
     # Cover the panel, cropping the overflow, rather than letterboxing.
     picture = ImageOps.fit(picture, size, Image.Resampling.LANCZOS)
+    # JPEG "white" is really off-white plus compression noise, which the dither
+    # turns into stray black specks - so clip both ends to pure before it runs.
+    span = WHITE_POINT - BLACK_POINT
+    picture = picture.point(
+        lambda v: 0 if v <= BLACK_POINT else 255 if v >= WHITE_POINT
+        else (v - BLACK_POINT) * 255 // span
+    )
     # Floyd-Steinberg dithering; PIL packs mode "1" rows MSB first, 1 = white,
     # which is what the sketch expects.
     return picture.convert("1").tobytes()
