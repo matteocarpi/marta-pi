@@ -87,8 +87,15 @@ ARRANGE_SCREENS = True
 # List options with: mpv --audio-device=help
 AUDIO_DEVICE = None
 
-# mpv volume, 0-100. Higher overdrives the PAM8403 on the jack and it distorts.
-AUDIO_VOLUME = 65
+# mpv volume, 0-100. 100 is unity gain; the limiter below keeps it from clipping.
+AUDIO_VOLUME = 100
+
+# Limiter (ffmpeg alimiter) before mpv's volume, so loud videos can't overdrive
+# the PAM8403. AUDIO_LIMIT is the peak ceiling as linear amplitude (0.0625-1);
+# 0.3 matches the old safe setting of volume 65 (mpv volume is cubic).
+# AUDIO_BOOST is input gain so quiet videos come up before hitting the ceiling.
+AUDIO_LIMIT = 0.3
+AUDIO_BOOST = 2.0
 
 # `marta` (the control script) talks to CONTROL_SOCKET; main.py in turn sets the
 # volume on the audio player through mpv's own IPC socket.
@@ -197,7 +204,12 @@ def arrange_screens():
 def video_command(path, connector, screen, audio=False):
     command = COMMON + ["--fullscreen", f"--hwdec={HWDEC}"]
     if audio:
-        command += [f"--volume={audio_volume}", f"--input-ipc-server={MPV_SOCKET}"]
+        command += [
+            f"--volume={audio_volume}",
+            f"--input-ipc-server={MPV_SOCKET}",
+            "--af=lavfi=[alimiter="
+            f"level_in={AUDIO_BOOST}:limit={AUDIO_LIMIT}:level=disabled]",
+        ]
         if AUDIO_DEVICE:
             command.append(f"--audio-device={AUDIO_DEVICE}")
     else:
