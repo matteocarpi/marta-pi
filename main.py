@@ -207,8 +207,10 @@ def video_command(path, connector, screen, audio=False):
         command += [
             f"--volume={audio_volume}",
             f"--input-ipc-server={MPV_SOCKET}",
-            "--af=lavfi=[alimiter="
-            f"level_in={AUDIO_BOOST}:limit={AUDIO_LIMIT}:level=disabled]",
+            # Downmix first: mpv would otherwise sum 5.1 channels after the
+            # limiter and push peaks back over the ceiling.
+            "--af=lavfi=[aformat=channel_layouts=stereo,alimiter="
+            f"level_in={AUDIO_BOOST}:limit={AUDIO_LIMIT}:release=200:level=disabled]",
         ]
         if AUDIO_DEVICE:
             command.append(f"--audio-device={AUDIO_DEVICE}")
